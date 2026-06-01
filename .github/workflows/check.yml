@@ -1,0 +1,39 @@
+name: Letterboxd Checker
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # every 5 minutes
+  workflow_dispatch:          # allow manual runs from the Actions tab
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write         # needed to commit seen.json back to the repo
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run checker
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          LETTERBOXD_USERS: ${{ secrets.LETTERBOXD_USERS }}
+        run: node check.js
+
+      - name: Commit updated seen.json
+        run: |
+          if [ -f changed.txt ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add seen.json
+            git commit -m "chore: update seen.json [skip ci]"
+            git push
+          else
+            echo "Nothing changed, skipping commit."
+          fi
