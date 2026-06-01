@@ -128,9 +128,6 @@ function buildPayload(username, item) {
     title: filmTitle,
     url: item.link,
     fields,
-    timestamp: item.watchedDate
-      ? new Date(item.watchedDate).toISOString()
-      : new Date(item.pubDate).toISOString(),
   };
 
   if (review) embed.description = review.length > 300 ? review.slice(0, 297) + "…" : review;
