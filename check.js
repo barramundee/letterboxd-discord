@@ -136,6 +136,30 @@ function extractReview(html) {
   return paras[0] || null;
 }
 
+// ─── Watchlist scraper ──────────────────────────────────────────────────────
+async function fetchWatchlist(username) {
+  const html = await httpsGet(`https://letterboxd.com/${username}/watchlist/`);
+  if (!html) return { films: [], total: null };
+
+  // Extract total count e.g. "158 films"
+  const totalMatch = html.match(/(\d+)\s+film/i);
+  const total = totalMatch ? parseInt(totalMatch[1]) : null;
+
+  // Extract film slugs and titles from poster elements
+  // Each film appears as: data-film-slug="film-slug" and the img alt is the title
+  const films = [];
+  const filmMatches = html.matchAll(/data-film-slug="([^"]+)"[^>]*>[\s\S]*?<img[^>]+alt="([^"]+)"/g);
+  for (const m of filmMatches) {
+    const slug = m[1];
+    const title = m[2].replace(/&amp;/g, "&").replace(/&#039;/g, "'").replace(/&quot;/g, '"').trim();
+    if (slug && title && !films.find(f => f.slug === slug)) {
+      films.push({ slug, title, guid: `watchlist-${username}-${slug}` });
+    }
+  }
+
+  return { films, total };
+}
+
 // ─── Embed builders ──────────────────────────────────────────────────────────
 function buildDiaryPayload(username, item) {
   const stars = ratingToStars(item.memberRating);
@@ -194,6 +218,25 @@ function buildWatchlistPayload(username, newFilms, total) {
   if (poster) embed.thumbnail = { url: poster };
 
   return { embeds: [embed] };
+}
+
+function buildWatchlistPayload(username, newFilms, total) {
+  const names = newFilms.map(f => `**${f.title}**`);
+  let filmList;
+  if (names.length === 1) filmList = names[0];
+  else if (names.length === 2) filmList = `${names[0]} and ${names[1]}`;
+  else filmList = `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+
+  return {
+    embeds: [{
+      color: 0xF5A623,
+      author: {
+        name: `${username} added to their watchlist`,
+        url: `https://letterboxd.com/${username}/watchlist/`,
+      },
+      description: `Added ${filmList} to their watchlist.${total ? ` They now have **${total}** films to watch!` : ""}`,
+    }]
+  };
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
