@@ -122,14 +122,25 @@ function getFilmPagePoster(html) {
   return img ? img[1] : null;
 }
 
+// ─── Poster resolver ─────────────────────────────────────────────────────────
+// Tries the canonical film page first (/film/slug/), which reliably has og:image.
+// Falls back to the user's diary film page (/username/film/slug/) if needed.
 async function resolvePosterFromFilmPage(username, slug) {
+  // 1. Canonical film page — most reliable source of poster art
+  try {
+    const html = await httpsGet(`https://letterboxd.com/film/${slug}/`);
+    const poster = getFilmPagePoster(html);
+    if (poster && poster.startsWith("http")) return poster;
+  } catch {}
+
+  // 2. User's film page as fallback
   try {
     const html = await httpsGet(`https://letterboxd.com/${username}/film/${slug}/`);
     const poster = getFilmPagePoster(html);
-    return poster && poster.startsWith("http") ? poster : null;
-  } catch {
-    return null;
-  }
+    if (poster && poster.startsWith("http")) return poster;
+  } catch {}
+
+  return null;
 }
 
 // ─── Watchlist scraper ──────────────────────────────────────────────────────
@@ -152,7 +163,6 @@ async function fetchWatchlist(username) {
     const title = (tag.match(/data-item-name="([^"]+)"/) || [])[1];
 
     const innerImg = (tag.match(/<img[^>]+src="([^"]+)"/) || [])[1];
-    const emptyPoster = (tag.match(/data-empty-poster-src="([^"]+)"/) || [])[1];
     const poster = innerImg && innerImg.startsWith("http") && !innerImg.includes("empty-poster")
       ? innerImg
       : null;
@@ -162,7 +172,6 @@ async function fetchWatchlist(username) {
         slug,
         title: decodeHtml(title),
         poster: poster || null,
-        emptyPoster: emptyPoster || null,
         guid: `watchlist-${username}-${slug}`,
       });
     }
@@ -285,11 +294,11 @@ async function main() {
         if (!isFirstRun) {
           const toSend = [];
           for (const film of newFilms) {
-            let poster = film.poster;
-            if (!poster) {
-              poster = await resolvePosterFromFilmPage(username, film.slug);
-              film.poster = poster;
-            }
+            // Always resolve from the canonical film page — the watchlist HTML
+            // rarely includes a usable poster src (lazy-loaded by JS), so we
+            // fetch /film/slug/ which reliably exposes og:image.
+            const resolved = await resolvePosterFromFilmPage(username, film.slug);
+            if (resolved) film.poster = resolved;
             toSend.push(film);
           }
 
