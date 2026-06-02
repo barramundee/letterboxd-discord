@@ -108,18 +108,12 @@ async function fetchWatchlist(username) {
   const totalMatch = html.match(/want to see ([\d,]+) film/i) || html.match(/([\d,]+) film/i);
   const total = totalMatch ? parseInt(totalMatch[1].replace(/,/g, "")) : null;
 
-  // Extract films from the poster list
-  // Letterboxd renders each film as <li data-film-slug="slug" ...><div ...><img ... alt="Title" ...>
+  // Extract films from href="/film/slug/" and title from data-original-title or frame-title
   const films = [];
-  const slugMatches = [...html.matchAll(/data-film-slug="([^"]+)"/g)];
-  const altMatches = [...html.matchAll(/class="image"[^>]*alt="([^"]+)"/g)];
-
-  // Also try: <img alt="Film Title" ... inside a watchlist item
-  const imgMatches = [...html.matchAll(/data-film-slug="([^"]+)"[\s\S]{0,300}?<img[^>]+alt="([^"]+)"/g)];
-
-  for (const m of imgMatches) {
-    const slug = m[1];
-    const title = m[2].replace(/&amp;/g, "&").replace(/&#039;/g, "'").replace(/&quot;/g, '"').trim();
+  const filmMatches = [...html.matchAll(/href="(\/film\/([^/]+)\/)"[^>]*data-original-title="([^"]+)"/g)];
+  for (const m of filmMatches) {
+    const slug = m[2];
+    const title = m[3].replace(/&amp;/g, "&").replace(/&#039;/g, "'").replace(/&quot;/g, '"').trim();
     if (slug && title && !films.find(f => f.slug === slug)) {
       films.push({ slug, title, guid: `watchlist-${username}-${slug}` });
     }
