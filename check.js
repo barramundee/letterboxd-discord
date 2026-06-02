@@ -46,6 +46,19 @@ function httpsPost(url, body) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+function decodeHtml(text) {
+  if (!text) return text;
+  return text
+    .replace(/&amp;/g, "&")
+    .replace(/&#39;/g, "'")
+    .replace(/&#039;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#034;/g, '"')
+    .trim();
+}
+
 // ─── RSS parser ──────────────────────────────────────────────────────────────
 function parseRSS(xml) {
   const items = [];
@@ -53,7 +66,7 @@ function parseRSS(xml) {
   for (const match of itemMatches) {
     const block = match[1];
     const get = (tag) => {
-      const m = block.match(new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\/${tag}>|<${tag}[^>]*>([^<]*)<\/${tag}>`));
+      const m = block.match(new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>|<${tag}[^>]*>([^<]*)<\\/${tag}>`));
       return m ? (m[1] ?? m[2] ?? "").trim() : null;
     };
     const getAttr = (tag, attr) => {
@@ -104,18 +117,20 @@ async function fetchWatchlist(username) {
   const html = await httpsGet(`https://letterboxd.com/${username}/watchlist/`);
   if (!html || typeof html !== "string") return { films: [], total: null };
 
-  // Extract total count from e.g. "You want to see 158 films" or "158 films"
-  const totalMatch = html.match(/want to see ([\d,]+) film/i) || html.match(/([\d,]+) film/i);
-  const total = totalMatch ? parseInt(totalMatch[1].replace(/,/g, "")) : null;
+  const totalMatch =
+    html.match(/data-num-entries="?(\d+)"?/) ||
+    html.match(/js-watchlist-count(?:[^0-9]|>)*?(\d+)/) ||
+    html.match(/js-watchlist-main-content[\s\S]*?section[^>]*>.*?([\d,]+) films?/i);
+  const total = totalMatch ? parseInt(totalMatch[1].replace(/,/g, ""), 10) : null;
 
-  // Extract films from data-item-slug and data-item-name attributes on react-component divs
   const films = [];
-  const filmMatches = [...html.matchAll(/data-item-slug="([^"]+)"[^>]*data-item-name="([^"]+)"/g)];
-  for (const m of filmMatches) {
-    const slug = m[1];
-    const title = m[2].replace(/&amp;/g, "&").replace(/&#039;/g, "'").replace(/&quot;/g, '"').replace(/&#034;/g, '"').trim();
+  const posterTags = [...html.matchAll(/<div[^>]*class="react-component[^"]*"[^>]*data-component-class="LazyPoster"[^>]*>/g)];
+  for (const match of posterTags) {
+    const tag = match[0];
+    const slug = (tag.match(/data-item-slug="([^"]+)"/) || [])[1];
+    const title = (tag.match(/data-item-name="([^"]+)"/) || [])[1];
     if (slug && title && !films.find(f => f.slug === slug)) {
-      films.push({ slug, title, guid: `watchlist-${username}-${slug}` });
+      films.push({ slug, title: decodeHtml(title), guid: `watchlist-${username}-${slug}` });
     }
   }
 
@@ -190,7 +205,6 @@ async function main() {
   for (const username of LETTERBOXD_USERS) {
     console.log(`Checking ${username}...`);
 
-    // ── Diary feed ────────────────────────────────────────────────────────
     try {
       const xml = await httpsGet(`https://letterboxd.com/${username}/rss/`);
       const items = parseRSS(xml);
@@ -223,7 +237,6 @@ async function main() {
 
     await sleep(500);
 
-    // ── Watchlist (HTML scrape) ───────────────────────────────────────────
     try {
       const { films, total } = await fetchWatchlist(username);
       const newFilms = films.filter(f => !seen.has(f.guid));
