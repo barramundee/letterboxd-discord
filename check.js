@@ -108,12 +108,12 @@ async function fetchWatchlist(username) {
   const totalMatch = html.match(/want to see ([\d,]+) film/i) || html.match(/([\d,]+) film/i);
   const total = totalMatch ? parseInt(totalMatch[1].replace(/,/g, "")) : null;
 
-  // Extract films from href="/film/slug/" and title from data-original-title or frame-title
+  // Extract films from data-item-slug and data-item-name attributes on react-component divs
   const films = [];
-  const filmMatches = [...html.matchAll(/href="(\/film\/([^/]+)\/)"[^>]*data-original-title="([^"]+)"/g)];
+  const filmMatches = [...html.matchAll(/data-item-slug="([^"]+)"[^>]*data-item-name="([^"]+)"/g)];
   for (const m of filmMatches) {
-    const slug = m[2];
-    const title = m[3].replace(/&amp;/g, "&").replace(/&#039;/g, "'").replace(/&quot;/g, '"').trim();
+    const slug = m[1];
+    const title = m[2].replace(/&amp;/g, "&").replace(/&#039;/g, "'").replace(/&quot;/g, '"').replace(/&#034;/g, '"').trim();
     if (slug && title && !films.find(f => f.slug === slug)) {
       films.push({ slug, title, guid: `watchlist-${username}-${slug}` });
     }
