@@ -125,12 +125,23 @@ async function fetchWatchlist(username) {
 
   const films = [];
   const posterTags = [...html.matchAll(/<div[^>]*class="react-component[^"]*"[^>]*data-component-class="LazyPoster"[^>]*>/g)];
+
   for (const match of posterTags) {
     const tag = match[0];
     const slug = (tag.match(/data-item-slug="([^"]+)"/) || [])[1];
     const title = (tag.match(/data-item-name="([^"]+)"/) || [])[1];
+    const posterMatch =
+      tag.match(/data-poster-url="([^"]+)"/) ||
+      tag.match(/data-empty-poster-src="([^"]+)"/);
+    const poster = posterMatch ? posterMatch[1] : null;
+
     if (slug && title && !films.find(f => f.slug === slug)) {
-      films.push({ slug, title: decodeHtml(title), guid: `watchlist-${username}-${slug}` });
+      films.push({
+        slug,
+        title: decodeHtml(title),
+        poster,
+        guid: `watchlist-${username}-${slug}`,
+      });
     }
   }
 
@@ -177,16 +188,20 @@ function buildWatchlistPayload(username, newFilms, total) {
   else if (names.length === 2) filmList = `${names[0]} and ${names[1]}`;
   else filmList = `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 
-  return {
-    embeds: [{
-      color: 0xF5A623,
-      author: {
-        name: `${username} added to their watchlist`,
-        url: `https://letterboxd.com/${username}/watchlist/`,
-      },
-      description: `Added ${filmList} to their watchlist.${total ? ` They now have **${total}** films to watch!` : ""}`,
-    }]
+  const firstPoster = newFilms.find(f => f.poster)?.poster;
+
+  const embed = {
+    color: 0xF5A623,
+    author: {
+      name: `${username} added to their watchlist`,
+      url: `https://letterboxd.com/${username}/watchlist/`,
+    },
+    description: `Added ${filmList} to their watchlist.${total ? ` They now have **${total}** films to watch!` : ""}`,
   };
+
+  if (firstPoster) embed.thumbnail = { url: firstPoster };
+
+  return { embeds: [embed] };
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
