@@ -112,6 +112,26 @@ function extractReview(html) {
   return paras[0] || null;
 }
 
+function getFilmPagePoster(html) {
+  if (!html) return null;
+  const og = html.match(/property="og:image"\s+content="([^"]+)"/i);
+  if (og && og[1]) return og[1];
+  const twitter = html.match(/name="twitter:image"\s+content="([^"]+)"/i);
+  if (twitter && twitter[1]) return twitter[1];
+  const img = html.match(/<img[^>]+src="([^"]+)"[^>]*class="[^"]*image[^"]*"/i);
+  return img ? img[1] : null;
+}
+
+async function resolvePosterFromFilmPage(username, slug) {
+  try {
+    const html = await httpsGet(`https://letterboxd.com/${username}/film/${slug}/`);
+    const poster = getFilmPagePoster(html);
+    return poster && poster.startsWith("http") ? poster : null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Watchlist scraper ──────────────────────────────────────────────────────
 async function fetchWatchlist(username) {
   const html = await httpsGet(`https://letterboxd.com/${username}/watchlist/`);
@@ -131,19 +151,18 @@ async function fetchWatchlist(username) {
     const slug = (tag.match(/data-item-slug="([^"]+)"/) || [])[1];
     const title = (tag.match(/data-item-name="([^"]+)"/) || [])[1];
 
-    const posterMatch =
-      tag.match(/<img[^>]+src="([^"]+)"/) ||
-      tag.match(/data-empty-poster-src="([^"]+)"/) ||
-      tag.match(/data-poster-url="([^"]+)"/);
-
-    let poster = posterMatch ? posterMatch[1] : null;
-    if (poster && !poster.startsWith("http")) poster = null;
+    const innerImg = (tag.match(/<img[^>]+src="([^"]+)"/) || [])[1];
+    const emptyPoster = (tag.match(/data-empty-poster-src="([^"]+)"/) || [])[1];
+    const poster = innerImg && innerImg.startsWith("http") && !innerImg.includes("empty-poster")
+      ? innerImg
+      : null;
 
     if (slug && title && !films.find(f => f.slug === slug)) {
       films.push({
         slug,
         title: decodeHtml(title),
-        poster,
+        poster: poster || null,
+        emptyPoster: emptyPoster || null,
         guid: `watchlist-${username}-${slug}`,
       });
     }
@@ -192,8 +211,6 @@ function buildWatchlistPayload(username, newFilms, total) {
   else if (names.length === 2) filmList = `${names[0]} and ${names[1]}`;
   else filmList = `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 
-  const firstPoster = newFilms.find(f => f.poster && f.poster.startsWith("http"))?.poster;
-
   const embed = {
     color: 0xF5A623,
     author: {
@@ -203,7 +220,10 @@ function buildWatchlistPayload(username, newFilms, total) {
     description: `Added ${filmList} to their watchlist.${total ? ` They now have **${total}** films to watch!` : ""}`,
   };
 
-  if (firstPoster) embed.thumbnail = { url: firstPoster };
+  const firstWithPoster = newFilms.find(f => f.poster);
+  if (firstWithPoster && firstWithPoster.poster) {
+    embed.thumbnail = { url: firstWithPoster.poster };
+  }
 
   return { embeds: [embed] };
 }
@@ -224,7 +244,6 @@ async function main() {
   for (const username of LETTERBOXD_USERS) {
     console.log(`Checking ${username}...`);
 
-    // Diary feed
     try {
       const xml = await httpsGet(`https://letterboxd.com/${username}/rss/`);
       const items = parseRSS(xml);
@@ -257,7 +276,6 @@ async function main() {
 
     await sleep(500);
 
-    // Watchlist
     try {
       const { films, total } = await fetchWatchlist(username);
       const newFilms = films.filter(f => !seen.has(f.guid));
@@ -265,7 +283,17 @@ async function main() {
 
       if (newFilms.length > 0) {
         if (!isFirstRun) {
-          const payload = buildWatchlistPayload(username, newFilms, total);
+          const toSend = [];
+          for (const film of newFilms) {
+            let poster = film.poster;
+            if (!poster) {
+              poster = await resolvePosterFromFilmPage(username, film.slug);
+              film.poster = poster;
+            }
+            toSend.push(film);
+          }
+
+          const payload = buildWatchlistPayload(username, toSend, total);
           const res = await httpsPost(WEBHOOK_URL, payload);
           if (res.status === 204 || res.status === 200) {
             console.log(`  ✓ Watchlist: ${newFilms.map(f => f.title).join(", ")}`);
