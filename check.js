@@ -1,7 +1,7 @@
 const https = require("https");
 const fs = require("fs");
 
-// ─── Config (set via GitHub Actions secrets / env vars) ────────────────────
+// ─── Config ────────────────────────────────────────────────────────────────
 const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const LETTERBOXD_USERS = (process.env.LETTERBOXD_USERS || "")
   .split(",")
@@ -51,7 +51,9 @@ function httpsPost(url, body) {
   });
 }
 
-// ─── RSS parser (no dependencies) ───────────────────────────────────────────
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ─── RSS parser ──────────────────────────────────────────────────────────────
 function parseRSS(xml) {
   const items = [];
   const itemMatches = xml.matchAll(/<item>([\s\S]*?)<\/item>/g);
@@ -81,6 +83,37 @@ function parseRSS(xml) {
   return items;
 }
 
+// Parse the watchlist RSS — extract total count from channel description
+function parseWatchlistRSS(xml) {
+  const items = [];
+  const itemMatches = xml.matchAll(/<item>([\s\S]*?)<\/item>/g);
+  for (const match of itemMatches) {
+    const block = match[1];
+    const get = (tag) => {
+      const m = block.match(new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\/${tag}>|<${tag}[^>]*>([^<]*)<\/${tag}>`));
+      return m ? (m[1] ?? m[2] ?? "").trim() : null;
+    };
+    const getAttr = (tag, attr) => {
+      const m = block.match(new RegExp(`<${tag}[^>]*${attr}="([^"]+)"`));
+      return m ? m[1] : null;
+    };
+    items.push({
+      guid: get("guid"),
+      filmTitle: get("letterboxd:filmTitle"),
+      filmYear: get("letterboxd:filmYear"),
+      link: get("link") || getAttr("link", "href"),
+      description: get("description"),
+    });
+  }
+
+  // Extract total watchlist count from channel-level description
+  const countMatch = xml.match(/<channel>[\s\S]*?<description><!?\[?CDATA\[?([^\]]*)\]?\]?>/);
+  const totalMatch = xml.match(/(\d+)\s+film/i);
+  const total = totalMatch ? parseInt(totalMatch[1]) : null;
+
+  return { items, total };
+}
+
 function ratingToStars(rating) {
   if (!rating) return null;
   const num = parseFloat(rating);
@@ -97,15 +130,14 @@ function extractPoster(html) {
 
 function extractReview(html) {
   if (!html) return null;
-  // Skip the first <p> which is usually the poster img wrapper
   const paras = [...html.matchAll(/<p>([\s\S]*?)<\/p>/g)].map((m) =>
     m[1].replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").trim()
   ).filter((p) => p.length > 0 && !p.startsWith("<img"));
   return paras[0] || null;
 }
 
-// ─── Discord webhook payload ─────────────────────────────────────────────────
-function buildPayload(username, item) {
+// ─── Embed builders ──────────────────────────────────────────────────────────
+function buildDiaryPayload(username, item) {
   const stars = ratingToStars(item.memberRating);
   const poster = extractPoster(item.description);
   const review = extractReview(item.description);
@@ -136,9 +168,36 @@ function buildPayload(username, item) {
   return { embeds: [embed] };
 }
 
+function buildWatchlistPayload(username, newFilms, total) {
+  // Format film list naturally: "A, B and C"
+  const names = newFilms.map(f => f.filmTitle ? `**${f.filmTitle}${f.filmYear ? ` (${f.filmYear})` : ""}**` : "**Unknown**");
+  let filmList;
+  if (names.length === 1) {
+    filmList = names[0];
+  } else if (names.length === 2) {
+    filmList = `${names[0]} and ${names[1]}`;
+  } else {
+    filmList = `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  }
+
+  const embed = {
+    color: 0xF5A623,
+    author: {
+      name: `${username} added to their watchlist`,
+      url: `https://letterboxd.com/${username}/watchlist/`,
+    },
+    description: `Added ${filmList} to their watchlist.${total ? ` They now have **${total}** films to watch!` : ""}`,
+  };
+
+  // Show poster of first added film if available
+  const poster = extractPoster(newFilms[0]?.description);
+  if (poster) embed.thumbnail = { url: poster };
+
+  return { embeds: [embed] };
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 async function main() {
-  // Load seen GUIDs
   let seen = new Set();
   try {
     seen = new Set(JSON.parse(fs.readFileSync(SEEN_FILE, "utf8")));
@@ -151,53 +210,71 @@ async function main() {
 
   for (const username of LETTERBOXD_USERS) {
     console.log(`Checking ${username}...`);
-    let xml;
+
+    // ── Diary feed ──────────────────────────────────────────────────────────
     try {
-      xml = await httpsGet(`https://letterboxd.com/${username}/rss/`);
-    } catch (err) {
-      console.error(`  Failed to fetch RSS for ${username}:`, err.message);
-      continue;
-    }
+      const xml = await httpsGet(`https://letterboxd.com/${username}/rss/`);
+      const items = parseRSS(xml);
+      const newItems = items.filter((i) => i.guid && !seen.has(i.guid)).reverse();
 
-    const items = parseRSS(xml);
-    const newItems = items.filter((i) => i.guid && !seen.has(i.guid)).reverse();
+      for (const item of newItems) {
+        const isFilm = item.filmTitle || (item.link && item.link.includes("/film/"));
+        if (!isFilm) { seen.add(item.guid); changed = true; continue; }
 
-    for (const item of newItems) {
-      // Only diary/film entries
-      const isFilm = item.filmTitle || (item.link && item.link.includes("/film/"));
-      if (!isFilm) {
-        seen.add(item.guid);
-        changed = true;
-        continue;
-      }
-
-      if (!isFirstRun) {
-        try {
-          const payload = buildPayload(username, item);
+        if (!isFirstRun) {
+          const payload = buildDiaryPayload(username, item);
           const res = await httpsPost(WEBHOOK_URL, payload);
           if (res.status === 204 || res.status === 200) {
-            console.log(`  ✓ Posted: ${item.filmTitle || item.title}`);
+            console.log(`  ✓ Diary: ${item.filmTitle || item.title}`);
           } else {
             console.error(`  ✗ Webhook error ${res.status}:`, res.body);
           }
-          // Respect Discord rate limits
-          await new Promise((r) => setTimeout(r, 1000));
-        } catch (err) {
-          console.error(`  ✗ Failed to post:`, err.message);
+          await sleep(1000);
+        } else {
+          console.log(`  Seeding diary: ${item.filmTitle || item.title}`);
         }
-      } else {
-        console.log(`  Seeding (first run): ${item.filmTitle || item.title}`);
-      }
 
-      seen.add(item.guid);
-      changed = true;
+        seen.add(item.guid);
+        changed = true;
+      }
+    } catch (err) {
+      console.error(`  Failed diary feed for ${username}:`, err.message);
     }
+
+    await sleep(500);
+
+    // ── Watchlist feed ──────────────────────────────────────────────────────
+    try {
+      const xml = await httpsGet(`https://letterboxd.com/${username}/watchlist/rss/`);
+      const { items, total } = parseWatchlistRSS(xml);
+      const newItems = items.filter((i) => i.guid && !seen.has(i.guid)).reverse();
+
+      if (newItems.length > 0) {
+        if (!isFirstRun) {
+          // Group all new watchlist additions into one message
+          const payload = buildWatchlistPayload(username, newItems, total);
+          const res = await httpsPost(WEBHOOK_URL, payload);
+          if (res.status === 204 || res.status === 200) {
+            console.log(`  ✓ Watchlist: ${newItems.length} new film(s) added`);
+          } else {
+            console.error(`  ✗ Watchlist webhook error ${res.status}:`, res.body);
+          }
+          await sleep(1000);
+        } else {
+          console.log(`  Seeding watchlist: ${newItems.length} films`);
+        }
+        newItems.forEach(i => { seen.add(i.guid); changed = true; });
+      }
+    } catch (err) {
+      console.error(`  Failed watchlist feed for ${username}:`, err.message);
+    }
+
+    await sleep(500);
   }
 
   if (changed || isFirstRun) {
     fs.writeFileSync(SEEN_FILE, JSON.stringify([...seen]), "utf8");
-    console.log("saved seen.json");
-    // Signal to the workflow that seen.json changed
+    console.log("Saved seen.json");
     fs.writeFileSync("changed.txt", "1");
   } else {
     console.log("Nothing new.");
