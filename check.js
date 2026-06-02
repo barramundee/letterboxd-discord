@@ -130,10 +130,16 @@ async function fetchWatchlist(username) {
     const tag = match[0];
     const slug = (tag.match(/data-item-slug="([^"]+)"/) || [])[1];
     const title = (tag.match(/data-item-name="([^"]+)"/) || [])[1];
-    const posterMatch =
-      tag.match(/data-poster-url="([^"]+)"/) ||
-      tag.match(/data-empty-poster-src="([^"]+)"/);
-    const poster = posterMatch ? posterMatch[1] : null;
+
+    const imgMatch =
+      tag.match(/data-empty-poster-src="([^"]+)"/) ||
+      tag.match(/data-resolvable-poster-path="([^"]+)"/) ||
+      tag.match(/data-poster-url="([^"]+)"/);
+    let poster = imgMatch ? imgMatch[1] : null;
+
+    if (poster && poster.startsWith("http") === false) {
+      poster = null;
+    }
 
     if (slug && title && !films.find(f => f.slug === slug)) {
       films.push({
@@ -188,7 +194,7 @@ function buildWatchlistPayload(username, newFilms, total) {
   else if (names.length === 2) filmList = `${names[0]} and ${names[1]}`;
   else filmList = `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 
-  const firstPoster = newFilms.find(f => f.poster)?.poster;
+  const firstPoster = newFilms.find(f => f.poster && f.poster.startsWith("http"))?.poster;
 
   const embed = {
     color: 0xF5A623,
