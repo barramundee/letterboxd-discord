@@ -112,7 +112,7 @@ function extractReview(html) {
   return paras[0] || null;
 }
 
-// ─── Watchlist scraper (HTML) ────────────────────────────────────────────────
+// ─── Watchlist scraper ──────────────────────────────────────────────────────
 async function fetchWatchlist(username) {
   const html = await httpsGet(`https://letterboxd.com/${username}/watchlist/`);
   if (!html || typeof html !== "string") return { films: [], total: null };
@@ -131,15 +131,13 @@ async function fetchWatchlist(username) {
     const slug = (tag.match(/data-item-slug="([^"]+)"/) || [])[1];
     const title = (tag.match(/data-item-name="([^"]+)"/) || [])[1];
 
-    const imgMatch =
+    const posterMatch =
+      tag.match(/<img[^>]+src="([^"]+)"/) ||
       tag.match(/data-empty-poster-src="([^"]+)"/) ||
-      tag.match(/data-resolvable-poster-path="([^"]+)"/) ||
       tag.match(/data-poster-url="([^"]+)"/);
-    let poster = imgMatch ? imgMatch[1] : null;
 
-    if (poster && poster.startsWith("http") === false) {
-      poster = null;
-    }
+    let poster = posterMatch ? posterMatch[1] : null;
+    if (poster && !poster.startsWith("http")) poster = null;
 
     if (slug && title && !films.find(f => f.slug === slug)) {
       films.push({
@@ -226,6 +224,7 @@ async function main() {
   for (const username of LETTERBOXD_USERS) {
     console.log(`Checking ${username}...`);
 
+    // Diary feed
     try {
       const xml = await httpsGet(`https://letterboxd.com/${username}/rss/`);
       const items = parseRSS(xml);
@@ -258,6 +257,7 @@ async function main() {
 
     await sleep(500);
 
+    // Watchlist
     try {
       const { films, total } = await fetchWatchlist(username);
       const newFilms = films.filter(f => !seen.has(f.guid));
